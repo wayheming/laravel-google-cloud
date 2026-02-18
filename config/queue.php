@@ -73,6 +73,16 @@ return [
             'after_commit' => false,
         ],
 
+        'cloudtasks' => [
+            'driver' => 'cloudtasks',
+            'project' => env('CLOUD_TASKS_PROJECT'),
+            'location' => env('CLOUD_TASKS_LOCATION'),
+            'queue' => env('CLOUD_TASKS_QUEUE', 'default'),
+            'service_account_email' => env('CLOUD_TASKS_SERVICE_EMAIL'),
+            'handler' => env('CLOUD_TASKS_HANDLER', env('APP_URL')),
+            'after_commit' => false,
+        ],
+
         'deferred' => [
             'driver' => 'deferred',
         ],

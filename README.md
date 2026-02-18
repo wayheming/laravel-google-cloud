@@ -1,59 +1,190 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Laravel on Google Cloud
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Laravel 12 project configured for deployment on Google Cloud Run.
 
-## About Laravel
+## Architecture
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+```
+                    ┌─────────────────────────────────────────┐
+                    │            Google Cloud Run              │
+                    │  ┌───────┐    ┌─────────┐               │
+User ──── HTTPS ───►│  │ Nginx │───►│ PHP-FPM │  (one container) │
+                    │  └───────┘    └─────────┘               │
+                    └──────┬──────────┬───────────┬───────────┘
+                           │          │           │
+                  ┌────────▼───┐ ┌────▼─────┐ ┌───▼────────────┐
+                  │PlanetScale │ │Memorystore│ │ Cloud Tasks    │
+                  │(PostgreSQL)│ │  (Redis)  │ │  (Queues)      │
+                  └────────────┘ └──────────┘ └────────────────┘
+                                                    ▲
+                                             ┌──────┴────────┐
+                                             │Cloud Scheduler│
+                                             │   (Cron)      │
+                                             └───────────────┘
+```
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Service Mapping
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+| Laravel Feature | Service | Description |
+|-----------------|---------|-------------|
+| Web server | **Cloud Run** | Stateless container with Nginx + PHP-FPM |
+| Database | **PlanetScale** (PostgreSQL) | Managed PostgreSQL, connects via SSL |
+| Cache | **Memorystore** (Redis) | Managed Redis with private IP via VPC |
+| Sessions | **Memorystore** (Redis) | Same Redis instance as cache |
+| Queues / Jobs | **Cloud Tasks** | Push-based queue, sends HTTP to Cloud Run |
+| Scheduled tasks | **Cloud Scheduler** | Calls `POST /cloud-scheduler/run` every minute |
+| Logs | **Cloud Logging** | Automatic via `LOG_CHANNEL=stderr` |
+| File storage | **Cloud Storage** | For user uploads (stateless containers have no persistent disk) |
+| Secrets | **Secret Manager** | `APP_KEY`, `DB_PASSWORD`, etc. |
+| SSL/HTTPS | **Cloud Run** | Automatic TLS certificate |
 
-## Learning Laravel
+## Project Structure
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+```
+├── Dockerfile                  # Multi-stage build (node → composer → php-fpm)
+├── docker/
+│   ├── nginx.conf              # Nginx config (listens on $PORT)
+│   ├── supervisord.conf        # Manages nginx + php-fpm
+│   ├── start.sh                # Entrypoint: caches config, starts services
+│   ├── php.ini                 # Production PHP + OPcache settings
+│   └── php-fpm-pool.conf       # FPM pool with clear_env=no
+├── .dockerignore
+├── .env.production.example     # Template for Cloud Run env vars
+├── routes/scheduler.php        # Cloud Scheduler endpoint
+└── app/Http/Middleware/
+    └── VerifyCloudScheduler.php # Auth middleware for scheduler
+```
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Environment Variables
 
-## Laravel Sponsors
+All config is via Cloud Run environment variables (no `.env` file in production).
+See `.env.production.example` for the full list.
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+Key variables:
 
-### Premium Partners
+```bash
+# Database (PlanetScale PostgreSQL)
+DB_CONNECTION=pgsql
+DB_HOST=your-db.psdb.cloud
+DB_PORT=5432
+DB_SSLMODE=require
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+# Redis (Memorystore)
+REDIS_HOST=10.0.0.X
+CACHE_STORE=redis
+SESSION_DRIVER=redis
 
-## Contributing
+# Queues (Cloud Tasks)
+QUEUE_CONNECTION=cloudtasks
+CLOUD_TASKS_PROJECT=my-project
+CLOUD_TASKS_LOCATION=europe-west1
+CLOUD_TASKS_QUEUE=default
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+# Scheduler
+CLOUD_SCHEDULER_TOKEN=random-secret-token
 
-## Code of Conduct
+# Logging
+LOG_CHANNEL=stderr
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## Local Development
 
-## Security Vulnerabilities
+Everything runs locally via Docker Compose — PostgreSQL and Redis included.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+```bash
+# Clone and setup
+cp .env.example .env
+docker compose up --build
+```
 
-## License
+App is at **http://localhost:8080**. Health check: http://localhost:8080/up
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+| Local Service | Container | Port | Production Equivalent |
+|---------------|-----------|------|-----------------------|
+| App (Nginx + PHP-FPM) | `app` | 8080 | Cloud Run |
+| Queue Worker | `worker` | — | Cloud Tasks |
+| PostgreSQL 17 | `postgres` | 5432 | PlanetScale |
+| Redis 7 | `redis` | 6379 | Memorystore |
+| Scheduler | `php artisan schedule:run` | — | Cloud Scheduler |
+
+Locally queues use Redis + a worker container. In production, Cloud Tasks pushes HTTP requests to Cloud Run (no worker needed).
+
+### Useful commands
+
+```bash
+# Start
+docker compose up -d
+
+# Stop
+docker compose down
+
+# Rebuild after Dockerfile changes
+docker compose up --build
+
+# Run artisan commands
+docker compose exec app php artisan migrate
+docker compose exec app php artisan tinker
+
+# View logs
+docker compose logs -f app
+
+# Connect to PostgreSQL
+docker compose exec postgres psql -U laravel
+
+# Connect to Redis
+docker compose exec redis redis-cli
+```
+
+### Without Docker (native)
+
+```bash
+composer install
+npm install
+composer dev
+```
+
+Requires PHP 8.2+, PostgreSQL, and Redis installed locally. Update `.env` hosts to `127.0.0.1`.
+
+## Build & Deploy
+
+```bash
+# Build Docker image
+docker build -t laravel-gcloud .
+
+# Test locally
+docker run -p 8080:8080 -e PORT=8080 -e APP_KEY=base64:... laravel-gcloud
+curl http://localhost:8080/up
+
+# Deploy to Cloud Run
+gcloud run deploy laravel-app \
+    --source . \
+    --region=europe-west1 \
+    --allow-unauthenticated
+```
+
+## Services Setup
+
+### PlanetScale (PostgreSQL)
+Create a database at [planetscale.com](https://planetscale.com), copy the connection credentials into env vars.
+
+### Memorystore (Redis)
+```bash
+gcloud redis instances create laravel-redis \
+    --size=1 \
+    --region=europe-west1 \
+    --redis-version=redis_7_0
+```
+
+### Cloud Tasks
+```bash
+gcloud tasks queues create default --location=europe-west1
+```
+
+### Cloud Scheduler
+```bash
+gcloud scheduler jobs create http laravel-scheduler \
+    --schedule="* * * * *" \
+    --uri="https://YOUR_SERVICE_URL/cloud-scheduler/run" \
+    --http-method=POST \
+    --headers="X-CloudScheduler-Token=YOUR_SECRET_TOKEN"
+```

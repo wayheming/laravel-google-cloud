@@ -1,74 +1,106 @@
 services:
-    laravel.test:
+    app:
         build:
-            context: './vendor/laravel/sail/runtimes/8.5'
+            context: .
             dockerfile: Dockerfile
-            args:
-                WWWGROUP: '${WWWGROUP}'
-        image: 'sail-8.5/app'
-        extra_hosts:
-            - 'host.docker.internal:host-gateway'
         ports:
-            - '${APP_PORT:-80}:80'
-            - '${VITE_PORT:-5173}:${VITE_PORT:-5173}'
+            - '${APP_PORT:-8080}:8080'
         environment:
-            WWWUSER: '${WWWUSER}'
-            LARAVEL_SAIL: 1
-            XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
-            XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
-            IGNITION_LOCAL_SITES_PATH: '${PWD}'
-        volumes:
-            - '.:/var/www/html'
-        networks:
-            - sail
+            PORT: 8080
+            APP_NAME: '${APP_NAME:-Laravel}'
+            APP_ENV: local
+            APP_KEY: '${APP_KEY}'
+            APP_DEBUG: 'true'
+            APP_URL: 'http://localhost:${APP_PORT:-8080}'
+            LOG_CHANNEL: stderr
+            DB_CONNECTION: pgsql
+            DB_HOST: postgres
+            DB_PORT: 5432
+            DB_DATABASE: '${DB_DATABASE:-laravel}'
+            DB_USERNAME: '${DB_USERNAME:-laravel}'
+            DB_PASSWORD: '${DB_PASSWORD:-password}'
+            REDIS_CLIENT: phpredis
+            REDIS_HOST: redis
+            REDIS_PORT: 6379
+            CACHE_STORE: redis
+            SESSION_DRIVER: redis
+            QUEUE_CONNECTION: redis
+            RUN_MIGRATIONS: 'true'
         depends_on:
-            - mysql
-            - redis
-    mysql:
-        image: 'mysql:8.4'
-        ports:
-            - '${FORWARD_DB_PORT:-3306}:3306'
-        environment:
-            MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
-            MYSQL_ROOT_HOST: '%'
-            MYSQL_DATABASE: '${DB_DATABASE}'
-            MYSQL_USER: '${DB_USERNAME}'
-            MYSQL_PASSWORD: '${DB_PASSWORD}'
-            MYSQL_ALLOW_EMPTY_PASSWORD: 1
-            MYSQL_EXTRA_OPTIONS: '${MYSQL_EXTRA_OPTIONS:-}'
-        volumes:
-            - 'sail-mysql:/var/lib/mysql'
-            - './vendor/laravel/sail/database/mysql/create-testing-database.sh:/docker-entrypoint-initdb.d/10-create-testing-database.sh'
+            postgres:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
         networks:
-            - sail
+            - app
+
+    worker:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        command: php artisan queue:work redis --sleep=3 --tries=3 --max-time=3600
+        environment:
+            APP_NAME: '${APP_NAME:-Laravel}'
+            APP_ENV: local
+            APP_KEY: '${APP_KEY}'
+            APP_DEBUG: 'true'
+            APP_URL: 'http://localhost:${APP_PORT:-8080}'
+            LOG_CHANNEL: stderr
+            DB_CONNECTION: pgsql
+            DB_HOST: postgres
+            DB_PORT: 5432
+            DB_DATABASE: '${DB_DATABASE:-laravel}'
+            DB_USERNAME: '${DB_USERNAME:-laravel}'
+            DB_PASSWORD: '${DB_PASSWORD:-password}'
+            REDIS_CLIENT: phpredis
+            REDIS_HOST: redis
+            REDIS_PORT: 6379
+            CACHE_STORE: redis
+            QUEUE_CONNECTION: redis
+        depends_on:
+            app:
+                condition: service_started
+        networks:
+            - app
+
+    postgres:
+        image: 'postgres:17-alpine'
+        ports:
+            - '${FORWARD_DB_PORT:-5432}:5432'
+        environment:
+            POSTGRES_DB: '${DB_DATABASE:-laravel}'
+            POSTGRES_USER: '${DB_USERNAME:-laravel}'
+            POSTGRES_PASSWORD: '${DB_PASSWORD:-password}'
+        volumes:
+            - 'app-postgres:/var/lib/postgresql/data'
+        networks:
+            - app
         healthcheck:
-            test:
-                - CMD
-                - mysqladmin
-                - ping
-                - '-p${DB_PASSWORD}'
+            test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-laravel}']
+            interval: 5s
             retries: 3
             timeout: 5s
+
     redis:
-        image: 'redis:alpine'
+        image: 'redis:7-alpine'
         ports:
             - '${FORWARD_REDIS_PORT:-6379}:6379'
         volumes:
-            - 'sail-redis:/data'
+            - 'app-redis:/data'
         networks:
-            - sail
+            - app
         healthcheck:
-            test:
-                - CMD
-                - redis-cli
-                - ping
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 5s
             retries: 3
             timeout: 5s
+
 networks:
-    sail:
+    app:
         driver: bridge
+
 volumes:
-    sail-mysql:
+    app-postgres:
         driver: local
-    sail-redis:
+    app-redis:
         driver: local

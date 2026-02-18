@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'cloud_scheduler' => [
+        'token' => env('CLOUD_SCHEDULER_TOKEN'),
+    ],
+
 ];
